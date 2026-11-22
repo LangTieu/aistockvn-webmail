@@ -1,0 +1,1 @@
+{"inventory": {"workers": ["aistockvn-mail", "telnyx-sms-relay", "vn-stock-ai-gateway"], "r2_buckets": ["aistockvn-mail-backup", "aistockvn-mail-raw"], "d1_dbs": ["aistockvn-mail", "sms-inbox"]}, "last_alert_date": "2026-11-21", "last_alert_level": "HARD"}
