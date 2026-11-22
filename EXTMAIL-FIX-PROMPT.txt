@@ -1,0 +1,36 @@
+Webmail — fix External Mail Gmail connect: App Password with invisible Unicode spaces fails with `gmail_auth_failed`.
+
+Workdir: /data/home/webmail-r3-codex (already synced from VM ~/workspace/aistockvn-webmail, sha-verified — VM is the standard. Do NOT re-sync from anywhere else.)
+
+ROOT CAUSE (already proven, do NOT spend time re-investigating broadly):
+- `worker/gmail.ts:348` strips App Password spaces with `.replace(/\s+/g, "")`.
+- JavaScript `\s` does NOT match zero-width space U+200B (nor U+180E, U+2060, U+200C–U+200F).
+- When the user copies the App Password from Google's page, the paste can contain invisible characters, e.g. 'abcd\u200Befgh ijkl\u00A0mnop' (19 chars) -> after `/\s+/g` still 17 chars (U+200B survives) -> Gmail rejects LOGIN -> `gmail_auth_failed`.
+- Verified with node: after `/\s+/g` the string is 17 chars; after the OmniMail regex below it is exactly 16.
+
+FIX — follow OmniMail exactly (reference implementation `gmailAppPasswordField`, already verified):
+```ts
+const APP_PASSWORD_SEPARATORS =
+  /[\u0020\u00A0\u1680\u180E\u2000-\u200F\u202F\u205F\u2060\u3000\uFEFF]/g;
+```
+1. In `worker/gmail.ts`, function `connectGmailAccount` (~line 348): replace `.replace(/\s+/g, "")` with `.replace(APP_PASSWORD_SEPARATORS, "")` (define the constant next to the function, same regex as above, character for character).
+2. Validate AFTER stripping: password must match `/^[\x21-\x7E]{16}$/`. If not, throw `GmailError(400, <new code or reuse invalid_input>)` with a clear human-readable message (English, UI is English), e.g.: "Enter the 16-character App Password Google generated (Google Account > Security > 2-Step Verification > App passwords), not your regular Gmail password." NOTE: OmniMail deliberately does NOT strip tab/newline/control chars — they fail this validation. That means the existing test in `worker/gmail.test.ts` ("strips all whitespace ...", ~line 708, which pastes a tab + trailing newline and expects success) must be UPDATED to the new behaviour: tab/newline in the pasted value now yields the clear 400 error, not a successful connect. Update that test, do not keep the old expectation.
+3. The error message MUST actually reach the user in the UI — today it does not. Verified facts: `worker/index.ts` connect route (~line 2342) returns `json({ error: e.code, code: e.code }, e.status)` — the GmailError message is dropped. `src/api.ts` `requestJson` sets the shown message from `obj.error` first. `worker/external-routes.test.ts:781` asserts `error === "gmail_auth_failed"` for the connect route — keep that contract. So: keep `error` = code, ADD `message: e.message` to the GmailError responses of the external Gmail routes (connect at minimum; same one-line pattern for accounts/disconnect/sync if trivial), and update `src/api.ts` `requestJson` to prefer `obj.message` when present (safe: `err()` responses carry no `message` field). Verify end-to-end through route + api.ts + `src/external.tsx` errorText that a bad-length password shows the human message, not a bare code.
+4. Also give `gmail_auth_failed` itself a human message via the GmailError message (same guidance: Gmail rejected the sign-in — create a fresh 16-character App Password...), WITHOUT changing its code. It is thrown in `worker/gmail.ts` `command()` (~line 258) as `new ImapTaggedError(failureStatus, code)` — pass the human message there.
+5. Grep the whole repo for other `.replace(/\s+/g, "")` uses on passwords/credentials and fix them the same way. Known non-issues (leave alone): `worker/mail.ts:65` and `worker/notify-delivery.ts:38` (snippet collapsing), `src/error-boundary.tsx:33` (crash text collapsing).
+
+REGRESSION TESTS (extend `worker/gmail.test.ts`, reuse its existing mock IMAP harness `installFakeImap`, `FAKE_APP_PASSWORD`, `captureGmailError`):
+- App Password containing U+200B / U+00A0 / U+202F (mixed with normal spaces) strips to exactly 16 chars, LOGIN is called with the clean 16-char password, and the stored encrypted credential decrypts to the clean value.
+- Password that is 15 or 17 chars after stripping -> 400 with the clear human message (assert the message text, not just the code), and no row is written.
+- Password containing a tab/newline -> 400 with the clear message (updated old test).
+- Route-level test (extend `worker/external-routes.test.ts`): POST /api/external/gmail/connect with a bad-length password returns `error` = code AND `message` = the human text; keep the existing `gmail_auth_failed` assertion at :781 passing.
+
+VERIFICATION (must all pass before you report done — fix until green, do not report success on a red run):
+- `npx tsc --noEmit` = 0 errors.
+- `npx vitest run --exclude worker/smoke.e2e.test.ts` = all pass.
+- Keep changes minimal and ADD-ONLY in behaviour except the two intentional changes above (separator regex + validation, message plumbing). Do not rewrite shared files, do not touch any other feature.
+
+CONSTRAINTS:
+- DO NOT deploy. DO NOT commit. DO NOT touch secrets: never read, print or paste the contents of `.dev.vars` or any key/password file, never hardcode any key/secret.
+- Write a short result file `EXTMAIL-FIX-RESULT.md` in the workdir with: files changed + sha256 of each, `tsc` result, vitest result (pass count), and the EXACT new user-facing error message(s).
+- Report honestly: if anything fails or is blocked, say exactly what failed.
