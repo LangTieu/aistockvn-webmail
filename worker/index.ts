@@ -2309,7 +2309,7 @@ const body = (await req.json().catch(() => ({}))) as {
     await env.DB.prepare(
       `INSERT INTO messages (id, folder, mailbox_address, in_reply_to, references_hdr, from_addr, from_name, to_addrs, cc_addrs,
         subject, snippet, text_body, html_body, date, is_read, resend_id, attachments, short_code)
-       VALUES (?, 'sent', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?`,
+       VALUES (?, 'sent', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
     )
       .bind(
         id,
