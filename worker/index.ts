@@ -1504,7 +1504,7 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
     const countR = await env.DB.prepare(`SELECT COUNT(*) AS total FROM messages m JOIN messages_fts ON m.rowid = messages_fts.rowid WHERE ${where}`).bind(...ftBinds).first<{ total: number }>();
     const ftsTotal = countR?.total ?? 0;
 
-    const { results } = await env.DB.prepare(`SELECT m.id, m.folder, m.from_addr, m.from_name, m.to_addrs, m.subject, m.snippet, m.date, m.is_read, m.is_focused, m.attachments, m.mailbox_address, m.source FROM messages m JOIN messages_fts ON m.rowid = messages_fts.rowid WHERE ${where} ORDER BY bm25(messages_fts) LIMIT ${limit + 1}`).bind(...ftBinds).all<Row>();
+    const { results } = await env.DB.prepare(`SELECT m.id, m.folder, m.from_addr, m.from_name, m.to_addrs, m.subject, m.snippet, m.date, m.is_read, m.is_focused, m.attachments, m.mailbox_address, m.source, m.short_code FROM messages m JOIN messages_fts ON m.rowid = messages_fts.rowid WHERE ${where} ORDER BY bm25(messages_fts) LIMIT ${limit + 1}`).bind(...ftBinds).all<Row>();
     const ftsItems = results.slice(0, limit).map(listItem);
 
     // Decrypt-match pass for encrypted rows
@@ -1515,7 +1515,7 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
     if (q && callerMailboxList.length > 0) {
       const encBinds: unknown[] = [folder, ...callerMailboxList];
       const { results: encResults } = await env.DB.prepare(
-        `SELECT id, folder, from_addr, from_name, to_addrs, subject, snippet, date, is_read, is_focused, attachments, text_body, mailbox_address, source
+        `SELECT id, folder, from_addr, from_name, to_addrs, subject, snippet, date, is_read, is_focused, attachments, text_body, mailbox_address, source, short_code
          FROM messages WHERE folder = ? AND text_body LIKE 'enc:v1:%' AND mailbox_address IN (${callerMailboxList.map(() => "?").join(",")})`,
       )
         .bind(...encBinds)
@@ -1786,7 +1786,7 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
       sqlBinds.push(like);
     }
     const { results } = await env.DB.prepare(
-      `SELECT id, folder, from_addr, from_name, to_addrs, subject, snippet, date, is_read, is_focused, is_starred, attachments, mailbox_address, source
+      `SELECT id, folder, from_addr, from_name, to_addrs, subject, snippet, date, is_read, is_focused, is_starred, attachments, mailbox_address, source, short_code
        FROM messages WHERE ${sqlWhere} ORDER BY date DESC LIMIT ${limit + 1}`,
     )
       .bind(...sqlBinds)
@@ -1799,7 +1799,7 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
     if (q && callerMailboxList.length > 0) {
       const encBinds: unknown[] = [folder, before, ...callerMailboxList];
       const { results: encResults } = await env.DB.prepare(
-        `SELECT id, folder, from_addr, from_name, to_addrs, subject, snippet, date, is_read, is_focused, is_starred, attachments, text_body
+        `SELECT id, folder, from_addr, from_name, to_addrs, subject, snippet, date, is_read, is_focused, is_starred, attachments, text_body, short_code
          FROM messages WHERE folder = ? AND date < ? AND text_body LIKE 'enc:v1:%' AND mailbox_address IN (${callerMailboxList.map(() => "?").join(",")})`,
       )
         .bind(...encBinds)
