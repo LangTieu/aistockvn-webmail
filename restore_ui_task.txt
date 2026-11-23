@@ -1,0 +1,79 @@
+RESTORE the old webmail UI + re-attach Phase 4 R1 (drafts) + R2 (starred/threads/batch) on top of it.
+URGENT live-UI fix. Read this file FIRST, then the reference files. UI is English throughout.
+
+CURRENT STATE (verified, do not re-guess):
+- The LIVE site (deployed 15:11 19/11, Worker 7d230ce3) shows a NEW shell UI that users do not
+  recognise. The R1 round rewrote src/App.tsx into a small new shell (11.5KB) + new src/inbox.tsx
+  (29.7KB), LOSING from the UI: Logout button, Security section (MfaSettingsPanel), the real
+  Aliases panel (only a placeholder "Aliases view" left), the search box, Focused/Other tabs,
+  AI Summarize + Draft reply buttons, the login screen (MfaChallengeForm).
+- The OLD UI still exists intact in this workdir: restore-backup/App.tsx (1274 lines, 52KB) and
+  restore-backup/api.ts (5.3KB). src/aliases.tsx, src/mfa.tsx, src/drafts.tsx are intact.
+- Backend is CORRECT and complete (worker/index.ts, routes, migrations 0011+0012 live). DO NOT
+  touch worker/ at all. Frontend src/ only.
+- The new src/api.ts LOST old functions the old App needs (config, session, loginGoogle, loginDev,
+  logout, mfaConfirm, mfaChallenge, list(folder,q,before,tab), counts, get, markRead, send with
+  clientId, summary, draftReply, addDomain, setDomainEnabled, setAliasEnabled). It has an index
+  signature so tsc does not catch the missing functions — runtime calls would be undefined.
+
+YOUR JOBS (in order):
+(a) RESTORE src/App.tsx from restore-backup/App.tsx as the BASE. Keep the old layout and style
+    exactly: slate palette + teal-600 active tabs, sidebar with account/mailbox + Logout + Security
+    (MfaSettingsPanel), search box, Focused/Other tabs in Inbox, message list rows with Avatar,
+    ReadingPane with Summarize + Draft reply buttons, login screen + MfaChallengeForm, AliasesPanel.
+    This is the UI users know — DO NOT redesign it, do not restyle it, do not simplify it.
+(b) Re-attach R1 onto the restored App, in place, without breaking the old layout:
+    - Drafts item in the desktop sidebar AND the mobile bottom nav.
+    - DraftsView from src/drafts.tsx (already exists, keep using it).
+    - The old App already HAS a compose view — merge with it, DO NOT write a new compose:
+      autosave debounce ~2s + "Saved HH:MM" / "Saving…" status + Discard button, and sending must
+      pass draftId so the draft is deleted after a successful send.
+(c) Re-attach R2 onto the restored App:
+    - Starred item in the desktop sidebar AND the mobile bottom nav; StarredView.
+    - List/Threads toggle at the top of the Inbox.
+    - Star button on every list row AND in the reading pane.
+    - Checkbox on every row + "select all on this page" + batch bar with 5 buttons
+      (Mark read / Mark unread / Star / Unstar / Move to spam) that appears when something is
+      selected; client blocks selecting more than 50 and says so clearly.
+    - Reuse the WORKING logic from the current src/inbox.tsx (fetchThreads/fetchThread grouping,
+      batch calls, star toggling) but restyle to the OLD slate/teal look. Do NOT bring the new
+      shell layout back. Inline the R2 features into the restored App.tsx; leave the current
+      src/inbox.tsx file present and compiling (DO NOT delete it), even if nothing imports it.
+(d) MERGE src/api.ts into ONE file that has BOTH sets of functions:
+    - RESTORE the old `api` object from restore-backup/api.ts, every method: config, session,
+      loginGoogle, loginDev, logout, mfaStatus, mfaSetup(email), mfaConfirm, mfaDisable,
+      mfaChallenge, list(folder,q,before,tab), counts, domains, addDomain, setDomainEnabled,
+      listAliases, createAlias(label, domain?), setAliasEnabled, deleteAlias, get, markRead,
+      send, summary, draftReply, loginPassword, signup, forgotPassword, resetPassword,
+      verifyEmail. Do NOT change any old signature.
+    - KEEP all new named functions from the current src/api.ts: fetchDrafts, fetchDraft,
+      saveDraft, deleteDraftApi, fetchMessages, fetchStarred, fetchMessage, markMessageRead,
+      setStarred, fetchThreads, fetchThread, batchMessages, sendMail, plus types DraftItem,
+      SaveDraftPayload, SendMailPayload, MessageListResult, ThreadItem, BatchAction,
+      MAX_BATCH_SELECTION (= 50), and the new ApiClient `api` extras that existing src files
+      use (mfaEnable, mfaVerify, toggleAlias, updateAlias, listDomains/domains aliases).
+    - Reconcile the overlaps: ONE MessageItem type (old fields + isStarred + index signature);
+      ONE Alias/Domain type set (old field names kept + index signature for tolerance);
+      ONE request helper (keep the current requestJson: credentials include, X-Mail-Client on
+      non-GET) used by every method; `api.send` must accept BOTH clientId (old App) AND
+      draftId (R1) as optional fields and pass them through to POST /api/send.
+    - Before merging, grep every `from './api'` import across src/ and keep EVERY export any
+      src file references. No referenced export may go missing.
+(e) Do NOT modify worker/, migrations/, wrangler.jsonc, index.html, package.json.
+
+HARD CONSTRAINTS:
+- DO NOT rewrite worker/index.ts. DO NOT change any existing function signature (old or new).
+- NO commit, NO push, NO deploy. NO rm of any file. NO secrets/keys in prompts, logs or chat.
+- Do not modify or delete existing tests to make them pass. UI is English throughout.
+
+WHEN DONE, run in this workdir and report the results:
+- `npx tsc --noEmit` (must be 0 errors)
+- `npx vitest run --isolate=false` (must pass ALL tests: 185 baseline + any new tests;
+  smoke.e2e.test.ts is excluded as usual — it needs a live dev server)
+- Grep checklist on src/ — ALL 11 must be present: Logout, MfaSettingsPanel, AliasesPanel,
+  Search (search box), Focused tab, Summarize, Draft reply, Drafts, Starred, batch bar,
+  List/Threads toggle.
+If anything fails, fix it and re-run (max 3 fix rounds total, then stop and report FAIL LOUD).
+Report at the end: files restored/changed (with sha256), tsc result, vitest numbers
+(passed/failed/total), the 11-item grep checklist (present/missing each), and anything that
+still differs from the old UI.

@@ -1,0 +1,101 @@
+ROUND 3 — webmail UI restore, final round. Work to completion in this run.
+Do NOT ask any confirmation questions. Do NOT stop after one fix — iterate
+until tsc is 0, vitest passes, and ALL 11 checklist items are present in
+src/App.tsx (max 3 fix rounds in this run, then report FAIL LOUD with the
+real error output).
+
+CURRENT STATE (verified, do not re-guess):
+- Workdir: /data/home/webmail-restore-ui-ib3. src/App.tsx is ALREADY restored
+  from restore-backup/App.tsx (1251 lines; backup is 1274 lines; only 68 diff
+  lines vs backup, mostly at the tail: Login / ResetPassword / logout /
+  MailShell routing). Keep it as the base; do NOT rewrite it from scratch.
+- src/api.ts is the round-2 file (314 lines; round 2 only added `clientId?`
+  to SendMailPayload — the merge below is NOT done yet).
+- src/inbox.tsx, src/drafts.tsx, src/aliases.tsx, src/mfa.tsx unchanged.
+- restore-backup/App.tsx (1274 lines) + restore-backup/api.ts (96 lines) are
+  the OLD UI reference. restore_ui_task.txt in this workdir is the full spec —
+  re-read it first.
+- tsc currently has 9 errors, ALL in src/App.tsx — fix EVERY one:
+  (1) App.tsx(3,30) Module './api' has no exported member 'Addr';
+  (2) App.tsx(3,41) no exported member 'Config';
+  (3) App.tsx(3,54) no exported member 'MessageDetail';
+  (4) App.tsx(856,39) Parameter 'a' implicitly has an 'any' type;
+  (5) App.tsx(885,50) Parameter 'l' implicitly has an 'any' type;
+  (6) App.tsx(941,77) 'from' does not exist in type 'SendMailPayload';
+  (7) App.tsx(1239,7) Type 'string | null' is not assignable to type 'string';
+  (8) App.tsx(1247,38) MfaChallengeForm missing props email/onBack;
+  (9) App.tsx(1248,37) MfaChallengeForm missing prop onBack.
+  Fix the Login/MfaChallengeForm tail to match restore-backup/App.tsx exactly
+  where this file diverged.
+- Checklist grep on src/ already finds Logout, MfaSettingsPanel, AliasesPanel,
+  Search, Focused, Summarize, Draft reply, Drafts, Starred, batch — but
+  Starred/batch mostly live in src/inbox.tsx, NOT in the restored App.tsx.
+  The List/Threads toggle is MISSING from src/App.tsx. The checklist must
+  hold for the RESTORED App.tsx itself.
+
+YOUR JOBS THIS ROUND (in order):
+(b) Re-attach R1 onto the restored App: Drafts item in desktop sidebar AND
+    mobile bottom nav; DraftsView from src/drafts.tsx; merge with the old
+    App's existing compose view (DO NOT write a new compose): autosave
+    debounce ~2s + "Saved HH:MM" / "Saving…" status + Discard button;
+    sending must pass draftId so the draft is deleted after a successful send.
+(c) Re-attach R2 onto the restored App: Starred item in desktop sidebar AND
+    mobile bottom nav; StarredView; List/Threads toggle at the top of the
+    Inbox IN src/App.tsx itself (this is REQUIRED — not only in inbox.tsx);
+    star button on every list row AND in the reading pane; checkbox on every
+    row + "select all on this page" + batch bar with 5 buttons (Mark read /
+    Mark unread / Star / Unstar / Move to spam) that appears when something
+    is selected; client blocks selecting more than 50 and says so clearly.
+    Reuse the WORKING logic from the current src/inbox.tsx
+    (fetchThreads/fetchThread grouping, batch calls, star toggling) but
+    restyle to the OLD slate/teal look. Do NOT bring the new shell layout
+    back. Leave src/inbox.tsx present and compiling (DO NOT delete it).
+(d) MERGE src/api.ts into ONE file with BOTH sets:
+    RESTORE the old api object from restore-backup/api.ts — every method,
+    signatures unchanged: config, session, loginGoogle, loginDev, logout,
+    mfaConfirm, mfaChallenge, list(folder, q, before, tab), counts, get,
+    markRead, send (old shape, WITH clientId), summary, draftReply,
+    addDomain, setDomainEnabled, setAliasEnabled — plus the old types
+    (Addr, Config, MessageDetail, MessageItem, SendMailPayload WITH 'from'
+    AND clientId AND draftId optional fields, and every other old export).
+    KEEP all new named functions from the current src/api.ts: fetchDrafts,
+    fetchDraft, saveDraft, deleteDraftApi, fetchMessages, fetchStarred,
+    fetchMessage, markMessageRead, setStarred, fetchThreads, fetchThread,
+    batchMessages, sendMail, createAlias(label, domain?), mfaSetup(email),
+    and the types DraftItem, SaveDraftPayload, SendMailPayload,
+    MessageListResult, ThreadItem, BatchAction, MAX_BATCH_SELECTION = 50,
+    plus the ApiClient extras existing src files use.
+    Before merging, grep every import from './api' across src/ and keep
+    EVERY export any src file references. api.send must accept BOTH clientId
+    (old App) AND draftId (R1) as optional fields and pass them through to
+    POST /api/send. ONE MessageItem type (old fields + isStarred + index
+    signature); ONE Alias/Domain type set; ONE request helper (keep the
+    current requestJson: credentials include, X-Mail-Client on non-GET)
+    used by every method. NOTE: api.ts has an index signature so tsc does
+    NOT catch missing functions — verify the merge by grep, not by tsc alone.
+(e) Fix the 9 tsc errors listed above (the Addr/Config/MessageDetail/from
+    ones are fixed by the api.ts merge; fix the rest directly in App.tsx).
+
+STYLE: keep the OLD layout/colours exactly — slate + teal-600. UI is English
+throughout.
+
+HARD CONSTRAINTS (unchanged): Only edit files under src/. Do NOT modify
+worker/ (especially worker/index.ts), migrations/, wrangler.jsonc,
+index.html, package.json. NO commit, NO push, NO deploy. NO rm of any file
+under any circumstances — never run rm, never delete files. NO secrets/keys
+in prompts, logs or chat — never print environment variables or key values.
+Do not modify or delete existing tests to make them pass.
+
+WHEN DONE, run in this workdir and report the results:
+- npx tsc --noEmit (must be 0 errors)
+- npx vitest run --isolate=false (must pass ALL tests: 185 baseline;
+  worker/smoke.e2e.test.ts fails without a live dev server/SMOKE_BASE and
+  is excluded as usual)
+- Grep checklist on src/App.tsx specifically — ALL 11 must be present:
+  Logout, MfaSettingsPanel, AliasesPanel, Search (search box), Focused tab,
+  Summarize, Draft reply, Drafts, Starred, batch bar, List/Threads toggle.
+If anything fails, fix it and re-run (max 3 fix rounds total in this run,
+then stop and report FAIL LOUD with the real error output).
+Report at the end: files changed (with sha256), tsc result, vitest numbers
+(passed/failed/total), the 11-item grep checklist (present/missing each),
+and anything that still differs from the old UI.
