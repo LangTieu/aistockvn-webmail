@@ -1,0 +1,74 @@
+ROUND 3 — FIX ROUND 2 of 3 (nemotron). Work to completion in this run.
+Do NOT ask any confirmation questions.
+
+VERIFIED CURRENT STATE (do not re-guess — this was checked independently):
+- Workdir: /data/home/webmail-restore-ui-ib3. src/App.tsx 1279 lines,
+  src/api.ts 305 lines. `npx tsc --noEmit` = 0 errors.
+  `npx vitest run --isolate=false` = 185 passed (185); only
+  worker/smoke.e2e.test.ts fails (needs live dev server / SMOKE_BASE) as usual.
+- The api.ts merge is DONE and compiling — do NOT redo it. Only touch api.ts
+  if a grep proves a needed export is actually missing.
+- Checklist REAL status in src/App.tsx (7 real / 4 missing):
+  REAL and WORKING — Logout/Sign out (buttons wired to onLogout),
+  MfaSettingsPanel (rendered line 1266), AliasesPanel (rendered line 1271),
+  Search box, Focused/Other tab (wired to tab state), Summarize button
+  (calls api.summary), Draft reply button (calls api.draftReply).
+  MISSING / FAKE — these 4 are your ONLY jobs this round:
+  (1) Drafts: ZERO occurrences in App.tsx. No nav item, no route, no view.
+  (2) Starred: ZERO occurrences in App.tsx. No nav item, no route, no view.
+  (3) List/Threads toggle: line ~612 is ONLY an inert
+      `<span>List/Threads toggle</span>` — plain text, no buttons, no state.
+  (4) Batch bar: line ~1071 is ONLY an inert
+      `<span>batch bar</span>` inside the sidebar — plain text. There is NO
+      real batch bar: no row checkboxes, no "Mark read", no "Mark unread",
+      no "Move to spam", no selected count, no 50 cap anywhere in App.tsx.
+
+HARD RULE — NO CHECKLIST-GAMING: never satisfy a checklist item by adding
+inert label text, a comment, or a span that only contains the item's name.
+Every item must be a working UI element wired to real state and real API
+calls. A reviewer will read the JSX and click-test the behaviour, not just
+grep. The two fake spans above MUST be deleted as part of this round.
+
+YOUR JOBS (surgical edits ONLY to the current src/App.tsx — do NOT rewrite
+the file from scratch, do NOT restore from any .bak, do NOT touch worker/,
+migrations/, wrangler.jsonc, index.html, package.json; NO commit/push/deploy;
+NO rm of any file under any circumstances; NO secrets/keys in prompts/logs):
+(a) DELETE the fake `<span>List/Threads toggle</span>` (~line 612) and the
+    fake `<span>batch bar</span>` (~line 1071).
+(b) REAL List/Threads toggle: two real buttons "List" | "Threads" in the
+    inbox header area next to the Focused/Other tabs, backed by a threadMode
+    state ('list' | 'threads'). List mode renders the flat message list
+    (fetchMessages); Threads mode renders grouped threads using
+    fetchThreads/fetchThread from src/api.ts (reuse the WORKING grouping
+    logic from src/inbox.tsx). Style: active button bg-teal-600 text-white,
+    inactive bg-slate-100 — same as the Focused/Other tabs.
+(c) REAL batch bar: checkbox on every list row + a "select all on this page"
+    control. When 1+ rows are selected, show a bar IN THE LIST AREA (above
+    the list, never in the sidebar) displaying "N selected" plus 5 working
+    buttons: Mark read, Mark unread, Star, Unstar, Move to spam — wired to
+    batchMessages / setStarred / markMessageRead from src/api.ts. Block
+    selection beyond 50 (MAX_BATCH_SELECTION = 50 from api.ts) with a clear
+    on-screen message. Star button ALSO on every list row AND in the reading
+    pane (add it if not already there — verify by reading the row/pane JSX).
+(d) Drafts: add a "Drafts" item to the desktop Sidebar AND the mobile bottom
+    nav; add a #/drafts route rendering DraftsView from src/drafts.tsx;
+    autosave debounce ~2s with "Saved HH:MM" / "Saving…" status + Discard
+    button; sending must pass draftId so the draft is deleted after send.
+    Reuse the old App's existing compose view — do NOT write a new compose.
+(e) Starred: add a "Starred" item to the desktop Sidebar AND the mobile
+    bottom nav; add a #/starred route rendering a StarredView (list from
+    fetchStarred, star toggle per row). Keep the OLD slate + teal-600 look.
+
+WHEN DONE, run in this workdir and report:
+- npx tsc --noEmit (must be 0 errors)
+- npx vitest run --isolate=false (must be 185 passed; smoke.e2e excluded)
+- For EACH of the 11 items, report the App.tsx line numbers AND the handler/
+  state name that proves it is wired (Logout/onLogout, MfaSettingsPanel,
+  AliasesPanel, Search, Focused, Summarize, Draft reply, Drafts, Starred,
+  batch bar with its 5 buttons, List/Threads toggle). State explicitly that
+  the two fake spans are deleted (grep must find ZERO occurrences of the
+  literal texts "batch bar" and "List/Threads toggle" as inert spans).
+If anything fails, fix it and re-run (this is fix round 2 of 3 total).
+Report at the end: files changed (with sha256), tsc result, vitest numbers,
+the 11-item checklist with line numbers + wiring proof each, and anything
+that still differs from the old UI.
