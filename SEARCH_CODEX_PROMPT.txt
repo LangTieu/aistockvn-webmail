@@ -1,0 +1,23 @@
+Nối UI tìm kiếm webmail sang /api/search (full-text search).
+
+BỐI CẢNH:
+- Repo webmail tại /data/home/webmail-r3-codex (đã sync bản live mới nhất, Worker 98ff0ddf).
+- FTS đã sống sau migration 0020 (trigger FTS tạo lại + rebuild).
+- UI hiện tại tìm bằng LIKE qua /api/messages?q=, chỉ tìm trong tab đang mở (focused/other) — cần đổi sang /api/search để tìm full-text.
+
+ĐỌC CODE TRƯỚC (không đoán):
+- Backend route: worker/index.ts dòng ~1463, GET /api/search. Tham số: q (bắt buộc), folder (mặc định "inbox"), limit (mặc định 30, tối đa 100). Trả về { items, total }, items có dạng listItem (id, folder, from_addr, from_name, to_addrs, subject, snippet, date, is_read, is_focused, attachments, mailbox_address, source). Tìm bằng FTS MATCH trên messages_fts + có decrypt-match pass cho mail mã hoá.
+- Frontend: src/App.tsx — state `input` (ô tìm kiếm), debounce 300ms rồi setQuery(input.trim()), hàm load() gọi api.list(folder, query, undefined, folder === "inbox" ? tab : undefined) → đi /api/messages?q= kèm folder + tab. Ô tìm kiếm ở header (placeholder "Search in ...").
+- src/api.ts — fetchMessages(params) với q → /api/messages (dòng ~379). CHƯA có hàm gọi /api/search.
+
+NHIỆM VỤ:
+1. Thêm hàm searchMessages(q, folder?, limit?) vào src/api.ts, gọi GET /api/search, trả về { items, total } (dạng MessageListResult hoặc tương đương, khớp kiểu items hiện có).
+2. Trong src/App.tsx: khi query khác rỗng, load() dùng searchMessages(query, folder) THAY cho api.list — kết quả từ FTS (khớp tiêu đề + nội dung + người gửi), trong thư mục hiện tại, KHÔNG giới hạn tab focused/other. Khi query rỗng thì về lại đường list bình thường như cũ.
+3. GIỮ NGUYÊN giao diện: cùng ô tìm kiếm, cùng cách render danh sách, cùng trạng thái rỗng ("Try a different search."). CẤM viết lại App.tsx hay api.ts từ đầu — chỉ sửa đúng chỗ đường tìm kiếm, giữ nguyên mọi export/signature hiện có.
+4. KHÔNG đụng wrangler.jsonc, migrations/, worker/r2-guard.ts.
+5. Thêm/sửa test để chứng minh: tìm 1 từ có trong mail test (ví dụ "hello R3" hoặc "Backblaze") qua /api/search phải trả về mail chứa từ đó; tìm từ không có phải trả rỗng. Đặt test trong worker/search.test.ts (mới) hoặc mở rộng test search hiện có nếu đã có.
+
+VERIFY (bắt buộc, chạy trước khi kết thúc):
+- npx tsc --noEmit (phải exit 0).
+- npx vitest run --exclude worker/smoke.e2e.test.ts (phải pass hết).
+- Ghi kết quả + danh sách file đã sửa vào STATE.md ở thư mục repo (ghi rõ file, sha256, kích thước, số test pass/fail).
