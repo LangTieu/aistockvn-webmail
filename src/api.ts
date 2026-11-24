@@ -266,12 +266,17 @@ export class ApiError extends Error {
   }
 }
 
+// The worker rejects non-GET API calls without this header (worker/index.ts
+// requireMailClient); every mutating call must send it via this one wrapper.
+const MAIL_CLIENT_HEADERS: HeadersInit = { 'X-Mail-Client': '1' };
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase();
   const res = await fetch(url, {
     credentials: 'include',
     ...init,
     headers: {
+      ...MAIL_CLIENT_HEADERS,
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
       ...(method !== 'GET' ? { 'X-Mail-Client': '1' } : {}),
       ...(init?.headers ?? {}),
@@ -622,7 +627,7 @@ export const api: ApiClient = {
   uploadAttachments: async (files) => {
     const form = new FormData();
     for (const file of files) form.append("files", file, file.name);
-    const res = await fetch('/api/attachments/upload', { method: 'POST', credentials: 'include', headers: { 'X-Mail-Client': '1' }, body: form });
+    const res = await fetch('/api/attachments/upload', { method: 'POST', credentials: 'include', headers: { ...MAIL_CLIENT_HEADERS }, body: form });
     if (!res.ok) {
       const body = await res.json().catch(() => ({})) as { error?: string };
       throw new ApiError(res.status, body.error || `Request failed (${res.status})`);

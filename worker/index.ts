@@ -119,6 +119,19 @@ const err = (message: string, status: number, init?: { headers?: HeadersInit }) 
     headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...(init?.headers || {}) },
   });
 
+// Map attachment storage failures to the right status: a missing object is 404,
+// an upstream storage 5xx is 502, everything else stays a client error (400).
+const attachmentStorageError = (e: unknown): { message: string; status: number } => {
+  const message = (e as Error)?.message || "Failed to read attachment from storage.";
+  const m = message.match(/B2 download failed \((\d+)\)/);
+  if (m) {
+    const upstream = Number(m[1]);
+    if (upstream === 404) return { message: "Attachment not found in storage.", status: 404 };
+    if (upstream >= 500) return { message: "Attachment storage is unavailable.", status: 502 };
+  }
+  return { message, status: 400 };
+};
+
 type Row = Record<string, any>;
 
 function listItem(r: Row) {
@@ -223,7 +236,7 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
 
     if (existingLogin && nowSec - existingLogin.window_started_at < windowSeconds && existingLogin.attempts >= maxAttempts) {
       const retryAfter = Math.max(1, existingLogin.window_started_at + windowSeconds - nowSec);
-      return new Response(JSON.stringify({ error: `Too many attempts, try again in ${Math.ceil(windowSeconds / 60)} minutes` }), {
+      return new Response(JSON.stringify({ error: `Too many attempts, try again in ${Math.ceil(retryAfter / 60)} minutes` }), {
         status: 429,
         headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "Retry-After": String(retryAfter) },
       });
@@ -521,7 +534,7 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
     const result = await verifyEmailToken(token, env.DB, nowSec);
 
     if (!result.exists) return err("Invalid token", 400);
-    if (result.used) return err("Token already used", 400);
+    if (result.used) return err("Invalid token", 400);
     if (result.expired) {
       // Mark as used so it can't be reused
       const tokenHash = await sha256Hex(token);
@@ -529,9 +542,13 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
       return err("Token expired", 400);
     }
 
-    // Mark token as used
+    // Mark token as used atomically: WHERE used = 0 guarantees a concurrent
+    // request cannot consume the same token twice (meta.changes is the gate).
     const tokenHash = await sha256Hex(token);
-    await env.DB.prepare("UPDATE email_verifications SET used = 1 WHERE token_hash = ?").bind(tokenHash).run();
+    const consumed = await env.DB.prepare("UPDATE email_verifications SET used = 1 WHERE token_hash = ? AND used = 0")
+      .bind(tokenHash)
+      .run();
+    if (!consumed.meta.changes) return err("Invalid token", 400);
 
     // Mark user as verified
     await env.DB.prepare("UPDATE users SET verified = 1 WHERE email = ?").bind(result.email).run();
@@ -821,9 +838,12 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
           // Increment challenge attempts
           await env.DB.prepare("UPDATE mfa_challenges SET attempts = attempts + 1 WHERE user_id = ?")
             .bind(challengeRow.user_id).run();
-          // Increment rate limit attempts
-          await env.DB.prepare("UPDATE login_attempts SET attempts = attempts + 1, window_started_at = ? WHERE key_hash = ?")
-            .bind(nowSec, rateKey).run();
+          // Increment rate limit attempts, keeping the original window start so
+          // the window can still expire while failures continue
+          await env.DB.prepare(
+            "UPDATE login_attempts SET attempts = CASE WHEN ? - window_started_at < ? THEN attempts + 1 ELSE 1 END, " +
+              "window_started_at = CASE WHEN ? - window_started_at < ? THEN window_started_at ELSE ? END WHERE key_hash = ?",
+          ).bind(nowSec, 900, nowSec, 900, nowSec, rateKey).run();
           return err("Invalid MFA code", 401);
         }
 
@@ -843,18 +863,15 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
         return response;
       }
       // Challenge not found or expired - apply rate limit and return error
-      if (nowSec - 0 < 900) { // simple rate check
-        // Increment rate attempts for unknown challenge
-        const existingRate = await env.DB.prepare("SELECT attempts, window_started_at FROM login_attempts WHERE key_hash = ?")
-          .bind(rateKey)
-          .first<{ attempts: number; window_started_at: number }>();
-        if (existingRate && nowSec - existingRate.window_started_at < 900) {
-          await env.DB.prepare("UPDATE login_attempts SET attempts = attempts + 1, window_started_at = ? WHERE key_hash = ?")
-            .bind(nowSec, rateKey).run();
-        } else if (!existingRate) {
-          await env.DB.prepare("INSERT INTO login_attempts (key_hash, attempts, window_started_at) VALUES (?, 1, ?)")
-            .bind(rateKey, nowSec).run();
-        }
+      const existingRate = await env.DB.prepare("SELECT attempts, window_started_at FROM login_attempts WHERE key_hash = ?")
+        .bind(rateKey)
+        .first<{ attempts: number; window_started_at: number }>();
+      if (existingRate && nowSec - existingRate.window_started_at < 900) {
+        await env.DB.prepare("UPDATE login_attempts SET attempts = attempts + 1 WHERE key_hash = ?")
+          .bind(rateKey).run();
+      } else if (!existingRate) {
+        await env.DB.prepare("INSERT INTO login_attempts (key_hash, attempts, window_started_at) VALUES (?, 1, ?)")
+          .bind(rateKey, nowSec).run();
       }
       return err("Invalid or expired MFA challenge", 401);
     }
@@ -1509,6 +1526,7 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
 
     // Decrypt-match pass for encrypted rows
     let decryptCount = 0;
+    let undecryptableCount = 0;
     let decryptItems: Row[] = [];
     // Build ftsIds set BEFORE the decrypt loop to avoid double-counting
     const ftsIds = new Set(ftsItems.map((r: Row) => r.id));
@@ -1557,8 +1575,14 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
               decryptCount++;
               decryptItems.push(row as unknown as Row);
             }
-          } catch {
-            // skip rows that fail to decrypt
+          } catch (e) {
+            // Count and log rows that fail to decrypt instead of dropping them silently
+            undecryptableCount++;
+            console.error(JSON.stringify({
+              event: "search_decrypt_failed",
+              message_id: row.id,
+              error: (e as Error)?.message?.slice(0, 200),
+            }));
           }
         }
       }
@@ -1570,7 +1594,7 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
     const total = ftsTotal + decryptCount;
     const items = [...ftsItems, ...otherRows.map(listItem)].slice(0, limit);
 
-    return json({ items, total });
+    return json({ items, total, undecryptable: undecryptableCount });
   }
 
   // PHASE1-ALIASES
@@ -2039,8 +2063,18 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
         return err("File not found", 404);
       }
       if (meta?.key) {
-        const bytes = await loadAttachment(env, meta.key);
-        const name = (meta.filename || `tep-${attachmentIndex + 1}`).replace(/["\r\n]/g, "");
+        let bytes: ArrayBuffer;
+        try {
+          bytes = await loadAttachment(env, meta.key);
+        } catch (e) {
+          const mapped = attachmentStorageError(e);
+          return err(mapped.message, mapped.status);
+        }
+        // Re-validate the stored filename before reflecting it into Content-Disposition
+        const requestedName = meta.filename || `tep-${attachmentIndex + 1}`;
+        const name = validateAttachmentName(requestedName)
+          ? `tep-${attachmentIndex + 1}`
+          : requestedName.replace(/["\r\n]/g, "");
         return new Response(bytes, {
           headers: {
             "Content-Type": "application/octet-stream",
@@ -2266,7 +2300,10 @@ const body = (await req.json().catch(() => ({}))) as {
           loadedAttachments.push({ filename: attachment.filename, mimeType: attachment.mimeType || "application/octet-stream", base64: btoa(binary) });
         }
       }
-    } catch (e) { return err((e as Error).message || "Failed to read attachment from storage.", 400); }
+    } catch (e) {
+      const mapped = attachmentStorageError(e);
+      return err(mapped.message, mapped.status);
+    }
     let sendUrl: string;
     let sendHeaders: Record<string, string>;
     let sendPayload: Record<string, unknown>;

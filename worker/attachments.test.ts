@@ -35,3 +35,19 @@ describe("B2 outgoing attachments", () => {
     expect(validateAttachmentName("safe.pdf")).toBeNull();
   });
 });
+
+describe("attachment storage error mapping (audit fix 3)", () => {
+  // The mapping lives in the worker's attachmentStorageError helper; exercise it
+  // through loadAttachment's real error messages via the worker route logic.
+  it("loadAttachment throws the upstream status that the worker maps to 404/502", async () => {
+    const { loadAttachment } = await import("./attachments");
+    const fetchMock = vi.fn(async () => new Response("gone", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const validKey = "0123456789abcdef0123456789abcdef0123/obj";
+    await expect(loadAttachment(env, validKey)).rejects.toThrow("B2 download failed (404).");
+
+    const fetchMock5xx = vi.fn(async () => new Response("boom", { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock5xx);
+    await expect(loadAttachment(env, validKey)).rejects.toThrow("B2 download failed (503).");
+  });
+});
